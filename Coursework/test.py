@@ -1,236 +1,91 @@
-import numpy as np
-import pandas as pd
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Embedding, LSTM, Dropout
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-import random
+import sys
+import csv
+import os
 
-class NeuralNetworkChatbot:
-    def __init__(self):
-        self.model = None
-        self.tokenizer = Tokenizer()
-        self.label_encoder = LabelEncoder()
-        self.max_sequence_length = 20
+# Get the directory *one level up* from this file (since this script is inside Libraries)
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-        # Training data - questions and their categories
-        self.training_data = [
-            # Deadlines
-            {"question": "when is the deadline", "category": "deadline"},
-            {"question": "submission date", "category": "deadline"},
-            {"question": "when to submit coursework", "category": "deadline"},
-            {"question": "final due date", "category": "deadline"},
-            {"question": "last date for submission", "category": "deadline"},
+csv_file = os.path.join(base_dir, "Weighted_Test_Data.csv")
 
-            # Assignments
-            {"question": "tell me about assignments", "category": "assignment"},
-            {"question": "coursework details", "category": "assignment"},
-            {"question": "what are the projects", "category": "assignment"},
-            {"question": "homework requirements", "category": "assignment"},
-            {"question": "assignment submission", "category": "assignment"},
 
-            # Lectures
-            {"question": "lecture schedule", "category": "lecture"},
-            {"question": "class timetable", "category": "lecture"},
-            {"question": "when are classes", "category": "lecture"},
-            {"question": "teaching hours", "category": "lecture"},
-            {"question": "course schedule", "category": "lecture"},
+# Add the Libraries folder relative to this file
+libraries_path = os.path.join(base_dir, "Libraries")
+sys.path.append(libraries_path)
 
-            # Modules
-            {"question": "available modules", "category": "module"},
-            {"question": "course list", "category": "module"},
-            {"question": "what courses can I take", "category": "module"},
-            {"question": "subject options", "category": "module"},
-            {"question": "module selection", "category": "module"},
+# Import custom graph and algorithm
+from adjacency_list_graph import AdjacencyListGraph
+from dijkstra import dijkstra
 
-            # Admissions
-            {"question": "how to apply", "category": "admission"},
-            {"question": "admission process", "category": "admission"},
-            {"question": "enrollment procedure", "category": "admission"},
-            {"question": "application deadline", "category": "admission"},
-            {"question": "admission requirements", "category": "admission"}
-        ]
+# Load CSV relative to this script
+csv_file = os.path.join(base_dir, "Weighted_Test_Data.csv")
 
-        # Responses for each category
-        self.responses = {
-            "deadline": [
-                "The coursework deadline is December 3rd, 2025.",
-                "All submissions are due by December 3rd at 5 PM.",
-                "Final deadline: December 3rd, 2025."
-            ],
-            "assignment": [
-                "Assignments include a group project and individual report.",
-                "You'll have programming assignments and written coursework.",
-                "Check Moodle for specific assignment details and requirements."
-            ],
-            "lecture": [
-                "Lectures are on Monday 2 PM and Wednesday 10 AM.",
-                "Class schedule: Mon 2-4 PM, Wed 10-12 PM in Room 301.",
-                "You can find the complete timetable on the university app."
-            ],
-            "module": [
-                "Available modules: AI, Programming, Databases, and Web Development.",
-                "Core modules include COMP1827 (AI) and COMP1600 (Programming).",
-                "You can choose from various computing and mathematics modules."
-            ],
-            "admission": [
-                "Visit university.edu/admissions for application details.",
-                "The application deadline is January 31st for next semester.",
-                "Contact admissions@university.edu for specific requirements."
-            ]
-        }
+edges = []   # (station1, station2, weight)
+stations = set()
 
-    def prepare_data(self):
-        """Prepare training data for the neural network"""
-        questions = [item["question"] for item in self.training_data]
-        categories = [item["category"] for item in self.training_data]
+with open(csv_file, 'r', newline='', encoding='utf-8') as f:
+    reader = csv.reader(f)
+    for row in reader:
+        # Expected columns: LineName, Station1, Station2, Weight
+        line = row[0].strip() if len(row) > 0 else ''
+        s1 = row[1].strip() if len(row) > 1 and row[1] else ''
+        s2 = row[2].strip() if len(row) > 2 and row[2] else ''
+        weight = row[3].strip() if len(row) > 3 and row[3] else None
 
-        # Tokenize text
-        self.tokenizer.fit_on_texts(questions)
-        sequences = self.tokenizer.texts_to_sequences(questions)
-        X = pad_sequences(sequences, maxlen=self.max_sequence_length)
+        if s1:
+            stations.add(s1)
+        if s2:
+            stations.add(s2)
 
-        # Encode labels
-        y = self.label_encoder.fit_transform(categories)
+        if s1 and s2 and weight is not None:
+            try:
+                weight = float(weight)
+                edges.append((s1, s2, weight))
+            except ValueError:
+                pass
 
-        return X, y
+# Build Graph
+vertex_to_index = {v: i for i, v in enumerate(sorted(stations))}
+index_to_vertex = {i: v for v, i in vertex_to_index.items()}
 
-    def build_model(self, vocab_size, num_classes):
-        """Build a simple neural network model"""
-        model = Sequential([
-            # Embedding layer for text processing
-            Embedding(input_dim=vocab_size + 1, output_dim=64, input_length=self.max_sequence_length),
+G = AdjacencyListGraph(len(stations), weighted=True)
 
-            # LSTM layer for sequence understanding
-            LSTM(64, dropout=0.2, recurrent_dropout=0.2),
+added_edges = set()
 
-            # Dense layers for classification
-            Dense(32, activation='relu'),
-            Dropout(0.3),
+for u, v, w in edges:
+    u_idx = vertex_to_index[u]
+    v_idx = vertex_to_index[v]
+    edge_key = frozenset([u_idx, v_idx])
+    if edge_key not in added_edges:
+        try:
+            G.insert_edge(u_idx, v_idx, w)
+            added_edges.add(edge_key)
+        except RuntimeError:
+            pass
 
-            # Output layer
-            Dense(num_classes, activation='softmax')
-        ])
+# Dijkstra Shortest Path
+source = 'LineOne_One'
+target = 'LineThree_Five'
 
-        model.compile(
-            optimizer='adam',
-            loss='sparse_categorical_crossentropy',
-            metrics=['accuracy']
-        )
+source_idx = vertex_to_index[source]
+target_idx = vertex_to_index[target]
 
-        return model
+dist, parent = dijkstra(G, source_idx)
 
-    def train(self, epochs=100):
-        """Train the neural network"""
-        print("Preparing training data...")
-        X, y = self.prepare_data()
-
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-        # Build model
-        vocab_size = len(self.tokenizer.word_index)
-        num_classes = len(self.label_encoder.classes_)
-
-        print(f"Vocabulary size: {vocab_size}")
-        print(f"Number of classes: {num_classes}")
-
-        self.model = self.build_model(vocab_size, num_classes)
-
-        print("Training neural network...")
-        history = self.model.fit(
-            X_train, y_train,
-            epochs=epochs,
-            batch_size=8,
-            validation_data=(X_test, y_test),
-            verbose=1
-        )
-
-        print("Training completed!")
-        return history
-
-    def predict_category(self, question):
-        """Predict the category of a question"""
-        if self.model is None:
-            return "Model not trained yet. Please train the model first."
-
-        # Preprocess the question
-        sequence = self.tokenizer.texts_to_sequences([question])
-        padded_sequence = pad_sequences(sequence, maxlen=self.max_sequence_length)
-
-        # Make prediction
-        prediction = self.model.predict(padded_sequence, verbose=0)
-        predicted_class_index = np.argmax(prediction)
-        confidence = np.max(prediction)
-
-        # Get category name
-        predicted_category = self.label_encoder.inverse_transform([predicted_class_index])[0]
-
-        return predicted_category, confidence
-
-    def get_response(self, question):
-        """Get response for a question"""
-        predicted_category, confidence = self.predict_category(question)
-
-        if confidence > 0.6:  # Confidence threshold
-            responses = self.responses.get(predicted_category, ["I'm not sure about that."])
-            return random.choice(responses), predicted_category, confidence
-        else:
-            return "I'm not sure I understand. Can you rephrase your question?", "unknown", confidence
-
-    def add_training_example(self, question, category):
-        """Add new training example to improve the model"""
-        self.training_data.append({"question": question, "category": category})
-        print(f"Added training example: '{question}' -> '{category}'")
-
-# Demonstration and testing
-def demonstrate_neural_chatbot():
-    # Create and train the chatbot
-    chatbot = NeuralNetworkChatbot()
-
-    print("=== Neural Network Chatbot Demonstration ===")
-    print("Training the model... This may take a few minutes.")
-
-    # Train with fewer epochs for demonstration (use more for better accuracy)
-    chatbot.train(epochs=50)
-
-    print("\n=== Testing the Chatbot ===")
-
-    test_questions = [
-        "when is the submission deadline",
-        "tell me about class schedule",
-        "what assignments are required",
-        "how to apply for courses",
-        "available modules this semester",
-        "when should I submit my work",
-        "lecture times and dates"
-    ]
-
-    for question in test_questions:
-        response, category, confidence = chatbot.get_response(question)
-        print(f"\nYou: {question}")
-        print(f"Bot: {response}")
-        print(f"Category: {category}, Confidence: {confidence:.2f}")
-
-    # Interactive mode
-    print("\n=== Interactive Mode ===")
-    print("Type 'quit' to exit, 'retrain' to train with more data")
-
-    while True:
-        user_input = input("\nYou: ")
-
-        if user_input.lower() == 'quit':
+# Reconstruct path
+def get_path(parent, target_idx, index_to_vertex):
+    path = []
+    current = target_idx
+    visited = set()
+    while current is not None and current not in visited:
+        path.insert(0, index_to_vertex[current])
+        visited.add(current)
+        if parent[current] == current or parent[current] == -1:
             break
-        elif user_input.lower() == 'retrain':
-            print("Retraining with more epochs...")
-            chatbot.train(epochs=100)
-        else:
-            response, category, confidence = chatbot.get_response(user_input)
-            print(f"Bot: {response}")
-            print(f"(Category: {category}, Confidence: {confidence:.2f})")
+        current = parent[current]
+    return path
 
-if __name__ == "__main__":
-    demonstrate_neural_chatbot()
+path = get_path(parent, target_idx, index_to_vertex)
+
+print("=== Task 2a: Journey Planner ===\n")
+print(f"Shortest-time path from {source} to {target}: {' → '.join(path)}")
+print(f"Total travel time: {dist[target_idx]} minutes")
