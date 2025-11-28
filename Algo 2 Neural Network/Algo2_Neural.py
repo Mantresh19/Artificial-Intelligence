@@ -1,214 +1,180 @@
-import os
-import argparse
-import json
-from datetime import datetime
 import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
-import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.layers import Embedding, GlobalAveragePooling1D, Dense, Dropout, Input
+from tensorflow.keras.models import Sequential
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras import layers, models, callbacks
+import tensorflow as tf
 
-# -------------------------------------------------------
-# SAFE ARGPARSE (ignore unknown args)
-# -------------------------------------------------------
-parser = argparse.ArgumentParser()
+# Sample FAQ data - expanded training dataset
+questions = [
+    # Deadline intent
+    "when is the assignment deadline",
+    "assignment deadline",
+    "when is it due",
+    "what is the due date",
+    "deadline for submission",
+    "when should i submit",
+    "submission deadline date",
+    "when must i finish",
+    # Lecture intent
+    "what time is the lecture",
+    "lecture time",
+    "when is class",
+    "what time is the class",
+    "lecture schedule",
+    "when do we meet",
+    "class time",
+    "lecture timing",
+    # Submission intent
+    "how do i submit my work",
+    "submit work",
+    "how to submit",
+    "where do i upload",
+    "submission process",
+    "how to upload assignment",
+    "submit assignment",
+    "upload work",
+    # Exam intent
+    "where is the exam",
+    "exam location",
+    "when is the exam",
+    "exam details",
+    "exam time and place",
+    "exam schedule",
+    "where do i sit exam",
+    "exam venue",
+    # Grades intent
+    "what is my grade",
+    "check grades",
+    "my marks",
+    "grade results",
+    "when will i get grades",
+    "grades release",
+    "my score",
+    "feedback marks",
+    # Contact intent
+    "how do i contact my tutor",
+    "contact tutor",
+    "tutor email",
+    "reach out to tutor",
+    "tutor office hours",
+    "how to contact professor",
+    "tutor phone",
+    "get in touch with tutor",
+    # Schedule intent
+    "class schedule",
+    "lecture schedule",
+    "timetable",
+    "course timetable",
+    "when are classes",
+    "schedule of classes",
+    "next class time",
+    "course schedule",
+    # Library intent
+    "how do i access the library",
+    "library access",
+    "library hours",
+    "when is library open",
+    "library opening times",
+    "library location",
+    "access library",
+    "use library resources"
+]
 
-parser.add_argument("--csv", type=str, default="")
-parser.add_argument("--output-dir", type=str, default="./report_output")
-parser.add_argument("--epochs", type=int, default=100)
-parser.add_argument("--batch-size", type=int, default=32)
-parser.add_argument("--embed-dim", type=int, default=100)
-parser.add_argument("--max-words", type=int, default=10000)
-parser.add_argument("--max-len", type=int, default=40)
+# Intent categories and corresponding answers
+intents = ["deadline", "deadline", "deadline", "deadline", "deadline", "deadline", "deadline", "deadline",
+           "lecture", "lecture", "lecture", "lecture", "lecture", "lecture", "lecture", "lecture",
+           "submission", "submission", "submission", "submission", "submission", "submission", "submission",
+           "submission",
+           "exam", "exam", "exam", "exam", "exam", "exam", "exam", "exam",
+           "grades", "grades", "grades", "grades", "grades", "grades", "grades", "grades",
+           "contact", "contact", "contact", "contact", "contact", "contact", "contact", "contact",
+           "schedule", "schedule", "schedule", "schedule", "schedule", "schedule", "schedule", "schedule",
+           "library", "library", "library", "library", "library", "library", "library", "library"]
 
-args, unknown = parser.parse_known_args()
+answers = {
+    "deadline": "The assignment deadline is Monday, December 1st, 2025 at 5pm. Please submit your work on Moodle.",
+    "lecture": "Lectures are held on Wednesdays and Fridays at 10am in Building 1, Room 101.",
+    "submission": "You can submit your work through the Moodle page for your course. Click on the assignment link and upload your PDF file.",
+    "exam": "The exam will be held on December 15th, 2025 in the Main Examination Hall from 2pm to 4pm.",
+    "grades": "Your grades will be released on the course Moodle page within 2 weeks of submission.",
+    "contact": "You can contact your tutor during office hours (Tuesdays 2-4pm) or email them at tutor@gre.ac.uk",
+    "schedule": "Check the course timetable on Moodle for the full lecture schedule.",
+    "library": "The university library is open Monday-Friday 8am-6pm and Saturday 10am-4pm. Access it via your student card."
+}
 
-os.makedirs(args.output_dir, exist_ok=True)
+# Tokenizer for text preprocessing
+tokenizer = Tokenizer(num_words=100, oov_token="<OOV>")
+tokenizer.fit_on_texts(questions)
+X_train_seq = tokenizer.texts_to_sequences(questions)
+X_train_pad = pad_sequences(X_train_seq, maxlen=10, padding='post')
 
-# -------------------------------------------------------
-# SYNTHETIC DATASET WITH 92 CLASSES (for consistent 90–92% accuracy)
-# -------------------------------------------------------
-def build_synthetic_faq_92():
-    """
-    Creates a high-quality synthetic dataset with strong, learnable patterns.
-    Produces stable ~90–92% test accuracy.
-    """
-    texts = []
-    labels = []
+# Convert labels to numeric
+intent_list = intents
+label_map = {label: idx for idx, label in enumerate(set(intent_list))}
+y_train_encoded = np.array([label_map[label] for label in intent_list])
 
-    for i in range(92):
-        label = f"category_{i}"
+print("Training neural network model...")
 
-        base_phrases = [
-            f"Information about category {i}.",
-            f"Details and explanation for category {i}.",
-            f"Common questions related to category {i}.",
-            f"What do I need to know about category {i}?",
-            f"Help me understand category {i}.",
-            f"Explain the concept behind category {i}.",
-        ]
+# Build neural network model with embedding layer
+model = Sequential([
+    Input(shape=(10,)),
+    Embedding(100, 16),
+    GlobalAveragePooling1D(),
+    Dense(32, activation='relu'),
+    Dropout(0.2),
+    Dense(16, activation='relu'),
+    Dropout(0.2),
+    Dense(len(set(intent_list)), activation='softmax')
+])
 
-        # 6 base phrases × 10 repetitions × 2 variations → ~120 samples per class
-        for phrase in base_phrases:
-            for j in range(10):
-                s = f"{phrase} Example {j} for training."
+model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
-                texts.append(s)
-                labels.append(label)
+# Train model
+model.fit(X_train_pad, y_train_encoded, epochs=50, verbose=0, batch_size=2)
+train_accuracy = model.evaluate(X_train_pad, y_train_encoded, verbose=0)[1]
+print(f"Training complete!")
+print(f"Model accuracy on training data: {train_accuracy:.2%}\n")
 
-                # Variation 1: lowercase
-                texts.append(s.lower())
-                labels.append(label)
+# Interactive chatbot
+reverse_label_map = {v: k for k, v in label_map.items()}
 
-                # Variation 2: slightly extended
-                texts.append(f"{s} More information about category {i}.")
-                labels.append(label)
+print("=" * 70)
+print("FAQ CHATBOT - Neural Network Based Intent Classification")
+print("=" * 70)
+print("Example questions:")
+print("- When is the deadline?")
+print("- What time is the lecture?")
+print("- How do I submit my work?")
+print("- Where is the exam?")
+print("- What is my grade?")
+print("- How do I contact my tutor?")
+print("- When is the next lecture?")
+print("- How do I access the library?")
+print("Type 'quit' to exit")
+print("=" * 70 + "\n")
 
-    df = pd.DataFrame({"text": texts, "label": labels})
-    return df.sample(frac=1, random_state=42).reset_index(drop=True)
+while True:
+    user_question = input("You: ").strip()
 
-# Load dataset or CSV
-if args.csv:
-    df = pd.read_csv(args.csv)
-else:
-    df = build_synthetic_faq_92()
+    if user_question.lower() == 'quit':
+        print("Goodbye!")
+        break
 
-# -------------------------------------------------------
-# LABEL ENCODING
-# -------------------------------------------------------
-labels = sorted(df['label'].unique())
-label_to_idx = {l: i for i, l in enumerate(labels)}
-idx_to_label = {i: l for l, i in label_to_idx.items()}
-df['label_idx'] = df['label'].map(label_to_idx)
+    if not user_question:
+        print("Please enter a question.\n")
+        continue
 
-num_classes = len(labels)
+    # Process user input
+    user_seq = tokenizer.texts_to_sequences([user_question])
+    user_pad = pad_sequences(user_seq, maxlen=10, padding='post')
 
-# -------------------------------------------------------
-# TRAIN / TEST SPLIT
-# -------------------------------------------------------
-train_df, test_df = train_test_split(
-    df,
-    test_size=0.2,
-    stratify=df['label_idx'],
-    random_state=42
-)
+    # Make prediction
+    prediction = model.predict(user_pad, verbose=0)
+    confidence = np.max(prediction[0])
+    intent_idx = np.argmax(prediction[0])
+    intent = reverse_label_map[intent_idx]
 
-train_texts = train_df['text'].tolist()
-test_texts = test_df['text'].tolist()
-
-y_train = tf.keras.utils.to_categorical(train_df['label_idx'], num_classes)
-y_test = tf.keras.utils.to_categorical(test_df['label_idx'], num_classes)
-
-# -------------------------------------------------------
-# TOKENIZER
-# -------------------------------------------------------
-tokenizer = Tokenizer(num_words=args.max_words, oov_token="<OOV>")
-tokenizer.fit_on_texts(train_texts)
-
-X_train = pad_sequences(tokenizer.texts_to_sequences(train_texts), maxlen=args.max_len)
-X_test = pad_sequences(tokenizer.texts_to_sequences(test_texts), maxlen=args.max_len)
-
-vocab_size = min(args.max_words, len(tokenizer.word_index) + 1)
-
-# -------------------------------------------------------
-# MODEL ARCHITECTURE (tuned for PDF-level accuracy)
-# -------------------------------------------------------
-def build_model(vocab_size, embed_dim, max_len, num_classes):
-    inp = layers.Input(shape=(max_len,))
-    x = layers.Embedding(vocab_size, embed_dim)(inp)
-    x = layers.GlobalAveragePooling1D()(x)
-    x = layers.Dense(256, activation="relu")(x)  # Stronger feature extractor
-    x = layers.Dropout(0.2)(x)
-    x = layers.Dense(128, activation="relu")(x)
-    x = layers.Dropout(0.2)(x)
-    out = layers.Dense(num_classes, activation="softmax")(x)
-    return models.Model(inputs=inp, outputs=out)
-
-model = build_model(vocab_size, args.embed_dim, args.max_len, num_classes)
-
-model.compile(
-    optimizer="adam",
-    loss="categorical_crossentropy",
-    metrics=["accuracy"]
-)
-
-model.summary()
-
-# -------------------------------------------------------
-# TRAINING
-# -------------------------------------------------------
-early = callbacks.EarlyStopping(patience=12, restore_best_weights=True)
-
-history = model.fit(
-    X_train, y_train,
-    validation_split=0.1,
-    epochs=args.epochs,
-    batch_size=args.batch_size,
-    callbacks=[early],
-    verbose=2
-)
-
-# -------------------------------------------------------
-# SAVE MODEL
-# -------------------------------------------------------
-model.save(os.path.join(args.output_dir, "model.h5"))
-np.save(os.path.join(args.output_dir, "history.npy"), history.history)
-
-# -------------------------------------------------------
-# EVALUATION
-# -------------------------------------------------------
-test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-print(f"\nTest Accuracy: {test_acc:.4f}")
-
-y_pred = model.predict(X_test)
-y_pred_idx = y_pred.argmax(axis=1)
-y_true_idx = y_test.argmax(axis=1)
-
-# -------------------------------------------------------
-# RULE-BASED BASELINE (as described in your PDF)
-# -------------------------------------------------------
-def rule_based_predict(q):
-    q = q.lower()
-    for category in labels:
-        if category in q:
-            return label_to_idx[category]
-    return -1
-
-rule_preds = [rule_based_predict(q) for q in test_texts]
-rule_preds_fixed = [p if p != -1 else 0 for p in rule_preds]
-rule_acc = accuracy_score(y_true_idx, rule_preds_fixed)
-
-print(f"Rule-Based Accuracy: {rule_acc:.4f}")
-
-# -------------------------------------------------------
-# CONFUSION MATRIX
-# -------------------------------------------------------
-cm = confusion_matrix(y_true_idx, y_pred_idx)
-plt.imshow(cm, cmap="Blues")
-plt.title("Confusion Matrix")
-plt.savefig(os.path.join(args.output_dir, "conf_matrix.png"))
-plt.close()
-
-# -------------------------------------------------------
-# TRAINING CURVE
-# -------------------------------------------------------
-plt.plot(history.history['accuracy'], label="Train")
-plt.plot(history.history['val_accuracy'], label="Val")
-plt.title("Training Accuracy")
-plt.legend()
-plt.savefig(os.path.join(args.output_dir, "train_val_plot.png"))
-plt.close()
-
-# -------------------------------------------------------
-# LATEX PLACEHOLDER
-# -------------------------------------------------------
-latex_file = os.path.join(args.output_dir, "report.tex")
-with open(latex_file, "w") as f:
-    f.write("% Auto-generated LaTeX report placeholder.\n")
-
-print("\nLaTeX generated:", latex_file)
-print("All done!")
+    print(f"Chatbot: {answers[intent]}")
+    print(f"(Intent: {intent}, Confidence: {confidence:.2%})\n")

@@ -119,11 +119,7 @@ faq_knowledge_base = {
 }
 
 # SECTION 2: CHATBOT CONFIGURATION PARAMETERS
-
-# These parameters can be adjusted to tune the chatbot's behaviour
-# Minimum score needed to consider a match valid (0.0 to 1.0)
-# Lower value = more lenient matching, Higher value = stricter matching
-CONFIDENCE_THRESHOLD = 0.1
+CONFIDENCE_THRESHOLD = 0.3
 # Bonus score for exact phrase matches vs partial word matches
 EXACT_MATCH_BONUS = 0.5
 # Whether to give partial credit for substring matches
@@ -452,4 +448,4 @@ def test_all_thresholds():
 # Run it
 if __name__ == "__main__":
     test_all_thresholds()
-    # run_chatbot()
+    run_chatbot()
