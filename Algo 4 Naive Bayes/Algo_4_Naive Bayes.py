@@ -1,214 +1,231 @@
-import os
-import argparse
-import json
-from datetime import datetime
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
-import tensorflow as tf
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras import layers, models, callbacks
+"""
+my naive bayes classifier for the faq chatbot
+this is my part of the group project
+"""
 
-# -------------------------------------------------------
-# SAFE ARGPARSE (ignore unknown args)
-# -------------------------------------------------------
-parser = argparse.ArgumentParser()
+import math
+from collections import defaultdict
 
-parser.add_argument("--csv", type=str, default="")
-parser.add_argument("--output-dir", type=str, default="./report_output")
-parser.add_argument("--epochs", type=int, default=100)
-parser.add_argument("--batch-size", type=int, default=32)
-parser.add_argument("--embed-dim", type=int, default=100)
-parser.add_argument("--max-words", type=int, default=10000)
-parser.add_argument("--max-len", type=int, default=40)
 
-args, unknown = parser.parse_known_args()
+# intent classifier class
+class NBClassifier:
 
-os.makedirs(args.output_dir, exist_ok=True)
+    def __init__(self):
+        self.categories = []
+        self.words = set()
+        self.cat_prob = {}
+        self.word_prob = {}
+        self.word_count_total = {}
+        self.ready = False
 
-# -------------------------------------------------------
-# SYNTHETIC DATASET WITH 92 CLASSES (for consistent 90–92% accuracy)
-# -------------------------------------------------------
-def build_synthetic_faq_92():
-    """
-    Creates a high-quality synthetic dataset with strong, learnable patterns.
-    Produces stable ~90–92% test accuracy.
-    """
-    texts = []
-    labels = []
+    def clean(self, txt):
+        # preprocessing step
+        txt = txt.lower()
+        # remove punctuation
+        for c in ".,!?;:'\"":
+            txt = txt.replace(c, "")
+        return txt.split()
 
-    for i in range(92):
-        label = f"category_{i}"
+    def fit(self, X, y):
+        # training function
 
-        base_phrases = [
-            f"Information about category {i}.",
-            f"Details and explanation for category {i}.",
-            f"Common questions related to category {i}.",
-            f"What do I need to know about category {i}?",
-            f"Help me understand category {i}.",
-            f"Explain the concept behind category {i}.",
-        ]
+        if len(X) != len(y):
+            print("error: X and y lengths dont match!")
+            return
 
-        # 6 base phrases × 10 repetitions × 2 variations → ~120 samples per class
-        for phrase in base_phrases:
-            for j in range(10):
-                s = f"{phrase} Example {j} for training."
+        self.categories = list(set(y))
+        total = len(y)
 
-                texts.append(s)
-                labels.append(label)
+        # calculate P(category)
+        cat_counts = {}
+        for cat in self.categories:
+            cat_counts[cat] = 0
 
-                # Variation 1: lowercase
-                texts.append(s.lower())
-                labels.append(label)
+        for label in y:
+            cat_counts[label] = cat_counts[label] + 1
 
-                # Variation 2: slightly extended
-                texts.append(f"{s} More information about category {i}.")
-                labels.append(label)
+        for cat in self.categories:
+            self.cat_prob[cat] = cat_counts[cat] / total
 
-    df = pd.DataFrame({"text": texts, "label": labels})
-    return df.sample(frac=1, random_state=42).reset_index(drop=True)
+        # count words
+        word_freq = {}
+        for cat in self.categories:
+            word_freq[cat] = defaultdict(int)
 
-# Load dataset or CSV
-if args.csv:
-    df = pd.read_csv(args.csv)
-else:
-    df = build_synthetic_faq_92()
+        for text, label in zip(X, y):
+            tokens = self.clean(text)
+            for token in tokens:
+                self.words.add(token)
+                word_freq[label][token] = word_freq[label][token] + 1
 
-# -------------------------------------------------------
-# LABEL ENCODING
-# -------------------------------------------------------
-labels = sorted(df['label'].unique())
-label_to_idx = {l: i for i, l in enumerate(labels)}
-idx_to_label = {i: l for l, i in label_to_idx.items()}
-df['label_idx'] = df['label'].map(label_to_idx)
+        # total words per category
+        for cat in self.categories:
+            count = 0
+            for word in word_freq[cat]:
+                count = count + word_freq[cat][word]
+            self.word_count_total[cat] = count
 
-num_classes = len(labels)
+        # calculate P(word|category) - with smoothing
+        V = len(self.words)
 
-# -------------------------------------------------------
-# TRAIN / TEST SPLIT
-# -------------------------------------------------------
-train_df, test_df = train_test_split(
-    df,
-    test_size=0.2,
-    stratify=df['label_idx'],
-    random_state=42
-)
+        for cat in self.categories:
+            self.word_prob[cat] = {}
+            for word in self.words:
+                # smoothing to avoid zero probabilities
+                num = word_freq[cat][word] + 1
+                denom = self.word_count_total[cat] + V
+                self.word_prob[cat][word] = num / denom
 
-train_texts = train_df['text'].tolist()
-test_texts = test_df['text'].tolist()
+        self.ready = True
+        print("trained on", len(X), "examples")
 
-y_train = tf.keras.utils.to_categorical(train_df['label_idx'], num_classes)
-y_test = tf.keras.utils.to_categorical(test_df['label_idx'], num_classes)
+    def predict(self, text):
+        # make prediction
 
-# -------------------------------------------------------
-# TOKENIZER
-# -------------------------------------------------------
-tokenizer = Tokenizer(num_words=args.max_words, oov_token="<OOV>")
-tokenizer.fit_on_texts(train_texts)
+        if not self.ready:
+            return None, {}
 
-X_train = pad_sequences(tokenizer.texts_to_sequences(train_texts), maxlen=args.max_len)
-X_test = pad_sequences(tokenizer.texts_to_sequences(test_texts), maxlen=args.max_len)
+        tokens = self.clean(text)
+        scores = {}
 
-vocab_size = min(args.max_words, len(tokenizer.word_index) + 1)
+        for cat in self.categories:
+            # use log to prevent underflow
+            s = math.log(self.cat_prob[cat])
 
-# -------------------------------------------------------
-# MODEL ARCHITECTURE (tuned for PDF-level accuracy)
-# -------------------------------------------------------
-def build_model(vocab_size, embed_dim, max_len, num_classes):
-    inp = layers.Input(shape=(max_len,))
-    x = layers.Embedding(vocab_size, embed_dim)(inp)
-    x = layers.GlobalAveragePooling1D()(x)
-    x = layers.Dense(256, activation="relu")(x)  # Stronger feature extractor
-    x = layers.Dropout(0.2)(x)
-    x = layers.Dense(128, activation="relu")(x)
-    x = layers.Dropout(0.2)(x)
-    out = layers.Dense(num_classes, activation="softmax")(x)
-    return models.Model(inputs=inp, outputs=out)
+            for token in tokens:
+                if token in self.words:
+                    s = s + math.log(self.word_prob[cat][token])
 
-model = build_model(vocab_size, args.embed_dim, args.max_len, num_classes)
+            scores[cat] = s
 
-model.compile(
-    optimizer="adam",
-    loss="categorical_crossentropy",
-    metrics=["accuracy"]
-)
+        # find best category
+        best = None
+        best_score = float('-inf')
+        for cat in scores:
+            if scores[cat] > best_score:
+                best_score = scores[cat]
+                best = cat
 
-model.summary()
+        # calculate confidence scores
+        max_score = max(scores.values())
+        temp = {}
+        for cat in scores:
+            temp[cat] = math.exp(scores[cat] - max_score)
 
-# -------------------------------------------------------
-# TRAINING
-# -------------------------------------------------------
-early = callbacks.EarlyStopping(patience=12, restore_best_weights=True)
+        sum_temp = sum(temp.values())
+        confidence = {}
+        for cat in temp:
+            confidence[cat] = temp[cat] / sum_temp
 
-history = model.fit(
-    X_train, y_train,
-    validation_split=0.1,
-    epochs=args.epochs,
-    batch_size=args.batch_size,
-    callbacks=[early],
-    verbose=2
-)
+        return best, confidence
 
-# -------------------------------------------------------
-# SAVE MODEL
-# -------------------------------------------------------
-model.save(os.path.join(args.output_dir, "model.h5"))
-np.save(os.path.join(args.output_dir, "history.npy"), history.history)
 
-# -------------------------------------------------------
-# EVALUATION
-# -------------------------------------------------------
-test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-print(f"\nTest Accuracy: {test_acc:.4f}")
+# my training data
+X_train = [
+    "how do i apply",
+    "what do i need to apply to uni",
+    "when is the deadline",
+    "application process",
+    "admission requirements",
+    "can i still apply",
+    "what documents for application",
 
-y_pred = model.predict(X_test)
-y_pred_idx = y_pred.argmax(axis=1)
-y_true_idx = y_test.argmax(axis=1)
+    "how much does it cost",
+    "tuition fees",
+    "are there scholarships",
+    "can i get financial aid",
+    "payment deadlines",
+    "how expensive is it",
+    "do you have payment plans",
 
-# -------------------------------------------------------
-# RULE-BASED BASELINE (as described in your PDF)
-# -------------------------------------------------------
-def rule_based_predict(q):
-    q = q.lower()
-    for category in labels:
-        if category in q:
-            return label_to_idx[category]
-    return -1
+    "what courses do you offer",
+    "do you have computer science",
+    "what can i study",
+    "tell me about engineering",
+    "course options",
+    "what subjects are available",
 
-rule_preds = [rule_based_predict(q) for q in test_texts]
-rule_preds_fixed = [p if p != -1 else 0 for p in rule_preds]
-rule_acc = accuracy_score(y_true_idx, rule_preds_fixed)
+    "where is the campus",
+    "how do i get there",
+    "is there accommodation",
+    "do you have a library",
+    "what facilities",
+    "campus location",
 
-print(f"Rule-Based Accuracy: {rule_acc:.4f}")
+    "how can i contact you",
+    "what is your email",
+    "phone number",
+    "how to reach admissions",
+    "can i visit",
+    "where is your office"
+]
 
-# -------------------------------------------------------
-# CONFUSION MATRIX
-# -------------------------------------------------------
-cm = confusion_matrix(y_true_idx, y_pred_idx)
-plt.imshow(cm, cmap="Blues")
-plt.title("Confusion Matrix")
-plt.savefig(os.path.join(args.output_dir, "conf_matrix.png"))
-plt.close()
+y_train = [
+    "admissions", "admissions", "admissions", "admissions", "admissions", "admissions", "admissions",
+    "fees", "fees", "fees", "fees", "fees", "fees", "fees",
+    "courses", "courses", "courses", "courses", "courses", "courses",
+    "campus", "campus", "campus", "campus", "campus", "campus",
+    "contact", "contact", "contact", "contact", "contact", "contact"
+]
 
-# -------------------------------------------------------
-# TRAINING CURVE
-# -------------------------------------------------------
-plt.plot(history.history['accuracy'], label="Train")
-plt.plot(history.history['val_accuracy'], label="Val")
-plt.title("Training Accuracy")
-plt.legend()
-plt.savefig(os.path.join(args.output_dir, "train_val_plot.png"))
-plt.close()
+# the responses for each category
+responses_dict = {
+    "admissions": "You can apply online at our website. You need transcripts, personal statement, and a reference letter. Application deadline is January 15th for most courses.",
+    "fees": "Tuition fees are £9,250 per year for UK/EU students and £15,000-£20,000 for international students. We have scholarships available - check our funding page.",
+    "courses": "We offer a wide range of courses including Computer Science, Engineering, Business, Natural Sciences, and Humanities. Visit our course catalog for details.",
+    "campus": "Our main campus is located in the city center with excellent transport links. We have a 24/7 library, modern sports facilities, and on-campus accommodation.",
+    "contact": "You can reach us at info@university.ac.uk or call 01234 567890. Our offices are open Monday to Friday, 9am to 5pm. You're also welcome to visit us!"
+}
 
-# -------------------------------------------------------
-# LATEX PLACEHOLDER
-# -------------------------------------------------------
-latex_file = os.path.join(args.output_dir, "report.tex")
-with open(latex_file, "w") as f:
-    f.write("% Auto-generated LaTeX report placeholder.\n")
 
-print("\nLaTeX generated:", latex_file)
-print("All done!")
+# test function
+def test():
+    print("\nTesting the classifier...\n")
+
+    clf = NBClassifier()
+    clf.fit(X_train, y_train)
+
+    test_questions = [
+        "what's the deadline?",
+        "how much do i have to pay?",
+        "do you teach AI?",
+        "where is the university?",
+        "i want to get in touch"
+    ]
+
+    for q in test_questions:
+        cat, conf = clf.predict(q)
+        print("Q:", q)
+        print("Category:", cat, f"({conf[cat] * 100:.0f}% confident)")
+        print("Response:", responses_dict[cat][:60] + "...")
+        print()
+
+
+# interactive chat
+def chat():
+    clf = NBClassifier()
+    clf.fit(X_train, y_train)
+
+    print("\n" + "=" * 50)
+    print("University FAQ Bot - Type 'quit' to exit")
+    print("=" * 50 + "\n")
+
+    while True:
+        q = input("Ask me anything: ")
+
+        if q.lower() in ['quit', 'exit', 'q']:
+            print("\nBye!")
+            break
+
+        if not q:
+            continue
+
+        cat, conf = clf.predict(q)
+        print(f"\n[{cat}] {responses_dict[cat]}\n")
+
+
+if __name__ == "__main__":
+    test()
+
+    # uncomment to run interactive mode
+    chat()
